@@ -28,6 +28,7 @@ import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.core.audio.AudioFormat;
 import org.openhab.core.audio.AudioHTTPServer;
 import org.openhab.core.audio.AudioSink;
+import org.openhab.core.audio.AudioSource;
 import org.openhab.core.events.AbstractEvent;
 import org.openhab.core.events.EventPublisher;
 import org.openhab.core.library.types.OpenClosedType;
@@ -54,6 +55,7 @@ import io.esphome.api.*;
 import no.seime.openhab.binding.esphome.events.ESPHomeEventFactory;
 import no.seime.openhab.binding.esphome.internal.*;
 import no.seime.openhab.binding.esphome.internal.audio.ESPHomeAudioSink;
+import no.seime.openhab.binding.esphome.internal.audio.ESPHomeVoiceAssistantAudioSource;
 import no.seime.openhab.binding.esphome.internal.bluetooth.ESPHomeBluetoothProxyHandler;
 import no.seime.openhab.binding.esphome.internal.comm.*;
 import no.seime.openhab.binding.esphome.internal.discovery.ESPHomeMDNSHostnameResolver;
@@ -78,6 +80,36 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
     private static final String DEVICE_LOGGER_NAME = "ESPHOMEDEVICE";
     private static final String ACTION_TAG_SCANNED = "esphome.tag_scanned";
     static final String PROPERTY_LAST_KNOWN_IP_ADDRESS = "lastKnownIpAddress";
+
+    /**
+     * Voice assistant feature flags advertised by ESPHome in {@code DeviceInfoResponse.voice_assistant_feature_flags}.
+     * The currently available flags come from ESPHome's
+     * {@code esphome/components/voice_assistant/voice_assistant.h}.
+     */
+    public enum VoiceAssistantFeature {
+        /** The device exposes the voice assistant component itself. */
+        VOICE_ASSISTANT(1 << 0),
+        /** The device has a local speaker attached to the voice assistant. */
+        SPEAKER(1 << 1),
+        /** The device supports microphone audio streaming over the native API. */
+        API_AUDIO(1 << 2),
+        /** The device exposes voice-assistant timer support. */
+        TIMERS(1 << 3),
+        /** The device supports voice assistant announcements via a media player. */
+        ANNOUNCE(1 << 4),
+        /** The device supports starting a follow-up conversation from a media player. */
+        START_CONVERSATION(1 << 5);
+
+        private final int flag;
+
+        VoiceAssistantFeature(int flag) {
+            this.flag = flag;
+        }
+
+        public int getFlag() {
+            return flag;
+        }
+    }
 
     private final Logger logger = LoggerFactory.getLogger(ESPHomeHandler.class);
     private final Logger deviceLogger = LoggerFactory.getLogger(DEVICE_LOGGER_NAME);
@@ -131,6 +163,9 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
     private final Map<Integer, MediaPlayerStateResponse> mediaPlayerStates = new HashMap<>();
     private final Map<Integer, ESPHomeAudioSink> audioSinks = new HashMap<>();
     private final Map<Integer, ServiceRegistration<AudioSink>> audioSinkRegistrations = new HashMap<>();
+    private @Nullable ESPHomeVoiceAssistantAudioSource audioSource;
+    private @Nullable ServiceRegistration<AudioSource> audioSourceRegistration;
+    private int voiceAssistantFeatureFlags;
 
     private String logPrefix;
     @Nullable
@@ -277,6 +312,7 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
             // ThingActions
             clearThingActions();
             unregisterAudioSinks();
+            unregisterAudioSource();
             mediaPlayers.clear();
             mediaPlayerStates.clear();
 
@@ -304,10 +340,12 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
     private void refreshAudioServices() {
         if (!interrogated || disposed || connectionState != ConnectionState.CONNECTED) {
             unregisterAudioSinks();
+            unregisterAudioSource();
             return;
         }
 
         refreshAudioSink();
+        refreshAudioSource();
     }
 
     private void refreshAudioSink() {
@@ -348,6 +386,29 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
         }
     }
 
+    private void refreshAudioSource() {
+        if (!supportsVoiceAssistantApiAudio()) {
+            ESPHomeVoiceAssistantAudioSource source = audioSource;
+            audioSource = null;
+            if (source != null) {
+                source.close();
+            }
+            ServiceRegistration<AudioSource> registration = audioSourceRegistration;
+            audioSourceRegistration = null;
+            if (registration != null) {
+                registration.unregister();
+            }
+            return;
+        }
+
+        if (audioSource == null) {
+            ESPHomeVoiceAssistantAudioSource newAudioSource = new ESPHomeVoiceAssistantAudioSource(this);
+            audioSourceRegistration = bundleContext.registerService(AudioSource.class, newAudioSource,
+                    new Hashtable<>());
+            audioSource = newAudioSource;
+        }
+    }
+
     private @Nullable String resolveAudioSinkBaseUrl() {
         @Nullable
         String primaryAddress = networkAddressService.getPrimaryIpv4HostAddress();
@@ -362,6 +423,23 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
         }
         audioSinkRegistrations.clear();
         audioSinks.clear();
+    }
+
+    private void unregisterAudioSource() {
+        ESPHomeVoiceAssistantAudioSource source = audioSource;
+        if (source != null) {
+            source.close();
+            audioSource = null;
+        }
+        ServiceRegistration<AudioSource> sourceRegistration = audioSourceRegistration;
+        if (sourceRegistration != null) {
+            sourceRegistration.unregister();
+            audioSourceRegistration = null;
+        }
+    }
+
+    private boolean supportsVoiceAssistantApiAudio() {
+        return (voiceAssistantFeatureFlags & VoiceAssistantFeature.API_AUDIO.getFlag()) != 0;
     }
 
     private void handleMediaPlayerEntity(ListEntitiesMediaPlayerResponse message) {
@@ -604,6 +682,8 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
             cancelPingWatchdog();
             cancelConnectionTimeoutWatchdog();
             unregisterAudioSinks();
+            unregisterAudioSource();
+            voiceAssistantFeatureFlags = 0;
 
             if (frameHelper != null) {
                 frameHelper.close();
@@ -666,7 +746,6 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
             } else {
                 props.remove("projectVersion");
             }
-
             if (!rsp.getHasDeepSleep() && config.deepSleep) {
                 logger.warn(
                         "[{}] Thing is configured with deep sleep, but the ESPHome device does not support it. Disabling deep sleep mode",
@@ -674,6 +753,7 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
                 config.deepSleep = false;
             }
 
+            voiceAssistantFeatureFlags = rsp.getVoiceAssistantFeatureFlags();
             updateThing(editThing().withProperties(props).build());
             String compilationTime = rsp.getCompilationTime();
             if (!compilationTime.isEmpty() && compilationTime.equals(interrogatedCompilationTime)) {
@@ -727,6 +807,16 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
             }
         } else if (message instanceof SubscribeLogsResponse subscribeLogsResponse) {
             deviceLogger.info("[{}] {}", logPrefix, subscribeLogsResponse.getMessage().toStringUtf8());
+        } else if (message instanceof VoiceAssistantRequest voiceAssistantRequest) {
+            ESPHomeVoiceAssistantAudioSource source = audioSource;
+            if (source != null) {
+                source.handleVoiceAssistantRequest(voiceAssistantRequest);
+            }
+        } else if (message instanceof VoiceAssistantAudio voiceAssistantAudio) {
+            ESPHomeVoiceAssistantAudioSource source = audioSource;
+            if (source != null) {
+                source.handleVoiceAssistantAudio(voiceAssistantAudio);
+            }
         } else if (message instanceof HomeassistantActionRequest serviceResponse) {
             Map<String, String> data = convertPbListToMap(serviceResponse.getDataList());
             Map<String, String> dataTemplate = convertPbListToMap(serviceResponse.getDataTemplateList());
@@ -959,6 +1049,7 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
         // Clean up old actions
         clearThingActions();
         unregisterAudioSinks();
+        unregisterAudioSource();
         mediaPlayers.clear();
         mediaPlayerStates.clear();
         // Create a new classloader for the ThingActions generated from this device, to allow for proper
