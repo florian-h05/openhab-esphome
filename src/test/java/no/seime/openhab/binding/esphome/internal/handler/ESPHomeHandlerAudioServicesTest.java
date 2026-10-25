@@ -15,6 +15,7 @@ import java.lang.reflect.Method;
 import java.util.Dictionary;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +24,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.openhab.core.audio.AudioHTTPServer;
 import org.openhab.core.audio.AudioSink;
 import org.openhab.core.audio.AudioSource;
@@ -34,7 +37,9 @@ import org.openhab.core.library.types.PlayPauseType;
 import org.openhab.core.net.NetworkAddressService;
 import org.openhab.core.thing.Channel;
 import org.openhab.core.thing.ChannelUID;
+import org.openhab.core.thing.ThingUID;
 import org.openhab.core.thing.binding.ThingHandlerCallback;
+import org.openhab.core.thing.binding.builder.ChannelBuilder;
 import org.openhab.core.thing.internal.ThingImpl;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.ServiceRegistration;
@@ -50,13 +55,19 @@ import io.esphome.api.MediaPlayerState;
 import io.esphome.api.MediaPlayerStateResponse;
 import io.esphome.api.MediaPlayerSupportedFormat;
 import no.seime.openhab.binding.esphome.internal.BindingConstants;
+import no.seime.openhab.binding.esphome.internal.ESPHomeConfiguration;
+import no.seime.openhab.binding.esphome.internal.ESPHomeVersionService;
+import no.seime.openhab.binding.esphome.internal.FirmwareUpgradeService;
+import no.seime.openhab.binding.esphome.internal.MonitoredCompositeExecutorService;
 import no.seime.openhab.binding.esphome.internal.comm.ConnectionSelector;
 import no.seime.openhab.binding.esphome.internal.comm.EncryptedFrameHelper;
+import no.seime.openhab.binding.esphome.internal.discovery.ESPHomeMDNSHostnameResolver;
 import no.seime.openhab.binding.esphome.internal.handler.ESPHomeHandler.VoiceAssistantFeature;
 import no.seime.openhab.binding.esphome.internal.message.MediaPlayerMessageHandler.MediaPlayerFeature;
 import no.seime.openhab.binding.esphome.internal.message.statesubscription.ESPHomeEventSubscriber;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class ESPHomeHandlerAudioServicesTest {
 
     @Mock
@@ -81,23 +92,36 @@ class ESPHomeHandlerAudioServicesTest {
     private EncryptedFrameHelper frameHelper;
     @Mock
     private ThingHandlerCallback callback;
+    @Mock
+    private ESPHomeVersionService versionService;
+    @Mock
+    private FirmwareUpgradeService firmwareUpgradeService;
+    @Mock
+    private ESPHomeMDNSHostnameResolver mdnsHostnameResolver;
 
     private ESPHomeHandler handler;
-    private MonitoredScheduledThreadPoolExecutor executor;
+    private MonitoredCompositeExecutorService executor;
     private ExecutorService packetProcessorExecutor;
 
     @BeforeEach
     void setUp() throws Exception {
-        executor = new MonitoredScheduledThreadPoolExecutor(1, Executors.defaultThreadFactory(), 1000);
+        executor = new MonitoredCompositeExecutorService(Executors.newScheduledThreadPool(1),
+                (ThreadPoolExecutor) Executors.newCachedThreadPool(), 1000);
         packetProcessorExecutor = Executors.newSingleThreadExecutor();
 
         Mockito.lenient().when(networkAddressService.getPrimaryIpv4HostAddress()).thenReturn("127.0.0.1");
+        Mockito.lenient().when(versionService.createFirmwareUpdateAvailableChannel(any()))
+                .thenAnswer(i -> ChannelBuilder
+                        .create(new ChannelUID((ThingUID) i.getArgument(0), "firmwareUpdateAvailable")).build());
+        Mockito.lenient().when(versionService.createLatestFirmwareVersionChannel(any())).thenAnswer(i -> ChannelBuilder
+                .create(new ChannelUID((ThingUID) i.getArgument(0), "latestFirmwareVersion")).build());
 
         handler = new ESPHomeHandler(new ThingImpl(BindingConstants.THING_TYPE_DEVICE, "device"),
                 new ConnectionSelector(), channelTypeProvider, stateDescriptionProvider, eventSubscriber, executor,
-                new KeySequentialExecutor(packetProcessorExecutor), eventPublisher, null, bundleContext,
-                audioHTTPServer, networkAddressService);
+                new KeySequentialExecutor(packetProcessorExecutor), eventPublisher, null, bundleContext, versionService,
+                firmwareUpgradeService, mdnsHostnameResolver, audioHTTPServer, networkAddressService);
         handler.setCallback(callback);
+        setField("config", new ESPHomeConfiguration());
         setField("connectionState", enumValue(getFieldType("connectionState"), "CONNECTED"));
         setField("frameHelper", frameHelper);
     }
@@ -157,8 +181,8 @@ class ESPHomeHandlerAudioServicesTest {
         invokeHandleConnected(ListEntitiesDoneResponse.getDefaultInstance());
 
         invokeMethod("handleDisconnection",
-                new Class<?>[] { org.openhab.core.thing.ThingStatusDetail.class, String.class, boolean.class },
-                org.openhab.core.thing.ThingStatusDetail.COMMUNICATION_ERROR, "test", false);
+                new Class<?>[] { org.openhab.core.thing.ThingStatusDetail.class, String.class },
+                org.openhab.core.thing.ThingStatusDetail.COMMUNICATION_ERROR, "test");
 
         verify(audioSinkRegistration).unregister();
         verify(audioSourceRegistration).unregister();

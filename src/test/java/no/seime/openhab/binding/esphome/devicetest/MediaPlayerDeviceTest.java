@@ -41,7 +41,7 @@ public class MediaPlayerDeviceTest extends AbstractESPHomeDeviceTest {
         thingHandler.initialize();
         await().until(() -> thingHandler.isInterrogated());
 
-        assertEquals(7, thingHandler.getDynamicChannels().size());
+        assertEquals(9, thingHandler.getDynamicChannels().size());
 
         Set<String> channelIds = thingHandler.getDynamicChannels().stream().map(channel -> channel.getUID().getId())
                 .collect(Collectors.toSet());
