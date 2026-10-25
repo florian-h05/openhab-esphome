@@ -470,19 +470,18 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
     }
 
     private @Nullable AudioFormat mapSupportedAudioFormat(MediaPlayerSupportedFormat format) {
+        Integer bitDepth = format.getSampleBytes() > 0 ? format.getSampleBytes() * 8 : null;
         Long frequency = format.getSampleRate() > 0 ? (long) format.getSampleRate() : null;
         Integer channels = format.getNumChannels() > 0 ? format.getNumChannels() : null;
 
         return switch (format.getFormat().toUpperCase(Locale.ROOT)) {
             case "MP3" -> new AudioFormat(AudioFormat.CONTAINER_NONE, AudioFormat.CODEC_MP3, null, null, null,
                     frequency, channels);
-            case "WAV" -> {
-                Integer bitDepth = format.getSampleBytes() > 0 ? format.getSampleBytes() * 8 : null;
-                yield new AudioFormat(AudioFormat.CONTAINER_WAVE, AudioFormat.CODEC_PCM_SIGNED, null, bitDepth, null,
-                        frequency, channels);
-            }
+            case "WAV" -> new AudioFormat(AudioFormat.CONTAINER_WAVE, AudioFormat.CODEC_PCM_SIGNED, null, bitDepth,
+                    null, frequency, channels);
             case "OGG" -> new AudioFormat(AudioFormat.CONTAINER_OGG, AudioFormat.CODEC_VORBIS, null, null, null,
                     frequency, channels);
+            case "FLAC" -> new AudioFormat("FLAC", "FLAC", null, bitDepth, null, frequency, channels);
             default -> null;
         };
     }
