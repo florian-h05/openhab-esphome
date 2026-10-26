@@ -70,7 +70,11 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
         this.mediaPlayerKey = mediaPlayer.getKey();
         this.mediaPlayerObjectId = mediaPlayer.getObjectId();
         this.supportedFormats = supportedFormats;
-        this.id = handler.getThing().getUID() + ":sink:" + mediaPlayerObjectId;
+        String id = handler.getThing().getUID() + ":sink";
+        if (!mediaPlayerObjectId.isBlank()) {
+            id += ":" + mediaPlayerObjectId;
+        }
+        this.id = id;
         String thingLabel = handler.getThing().getLabel() != null ? handler.getThing().getLabel()
                 : handler.getThing().getUID().getId();
         this.label = "ESPHome " + thingLabel + " (" + mediaPlayer.getName() + ")";
