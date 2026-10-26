@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 Contributors to the Seime Openhab Addons project
+ * <p>
+ * See the NOTICE file(s) distributed with this work for additional
+ * information.
+ * <p>
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ * <p>
+ * SPDX-License-Identifier: EPL-2.0
+ */
 package no.seime.openhab.binding.esphome.internal.audio;
 
 import java.io.IOException;
@@ -21,6 +33,11 @@ import io.esphome.api.VoiceAssistantResponse;
 import no.seime.openhab.binding.esphome.internal.comm.ProtocolAPIError;
 import no.seime.openhab.binding.esphome.internal.handler.ESPHomeHandler;
 
+/**
+ * An EPSHome {@link AudioSource} implementation receiving audio from an ESPHome voice assistant over the native API.
+ *
+ * @author Cody Cutrer - Initial contribution
+ */
 @NonNullByDefault
 public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
 

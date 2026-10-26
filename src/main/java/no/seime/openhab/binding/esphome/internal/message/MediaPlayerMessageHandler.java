@@ -32,6 +32,7 @@ import io.esphome.api.MediaPlayerCommandRequest;
 import io.esphome.api.MediaPlayerState;
 import io.esphome.api.MediaPlayerStateResponse;
 import no.seime.openhab.binding.esphome.internal.EntityTypes;
+import no.seime.openhab.binding.esphome.internal.audio.MediaPlayerFeature;
 import no.seime.openhab.binding.esphome.internal.comm.ProtocolAPIError;
 import no.seime.openhab.binding.esphome.internal.handler.ESPHomeHandler;
 
@@ -45,29 +46,6 @@ public class MediaPlayerMessageHandler
     public static final String CHANNEL_VOLUME = "volume";
     public static final String CHANNEL_MUTE = "mute";
     public static final String CHANNEL_REPEAT = "repeat";
-
-    public enum MediaPlayerFeature {
-        PAUSE(1 << 0),
-        VOLUME_SET(1 << 2),
-        VOLUME_MUTE(1 << 3),
-        TURN_ON(1 << 7),
-        TURN_OFF(1 << 8),
-        VOLUME_STEP(1 << 10),
-        STOP(1 << 12),
-        CLEAR_PLAYLIST(1 << 13),
-        PLAY(1 << 14),
-        REPEAT_SET(1 << 18);
-
-        public final int flag;
-
-        MediaPlayerFeature(int flag) {
-            this.flag = flag;
-        }
-
-        public int getFlag() {
-            return flag;
-        }
-    }
 
     private static final String REPEAT_ONE = "one";
     private static final String REPEAT_OFF = "off";

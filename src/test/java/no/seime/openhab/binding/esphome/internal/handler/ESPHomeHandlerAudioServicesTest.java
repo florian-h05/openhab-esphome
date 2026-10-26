@@ -59,11 +59,11 @@ import no.seime.openhab.binding.esphome.internal.ESPHomeConfiguration;
 import no.seime.openhab.binding.esphome.internal.ESPHomeVersionService;
 import no.seime.openhab.binding.esphome.internal.FirmwareUpgradeService;
 import no.seime.openhab.binding.esphome.internal.MonitoredCompositeExecutorService;
+import no.seime.openhab.binding.esphome.internal.audio.MediaPlayerFeature;
+import no.seime.openhab.binding.esphome.internal.audio.VoiceAssistantFeature;
 import no.seime.openhab.binding.esphome.internal.comm.ConnectionSelector;
 import no.seime.openhab.binding.esphome.internal.comm.EncryptedFrameHelper;
 import no.seime.openhab.binding.esphome.internal.discovery.ESPHomeMDNSHostnameResolver;
-import no.seime.openhab.binding.esphome.internal.handler.ESPHomeHandler.VoiceAssistantFeature;
-import no.seime.openhab.binding.esphome.internal.message.MediaPlayerMessageHandler.MediaPlayerFeature;
 import no.seime.openhab.binding.esphome.internal.message.statesubscription.ESPHomeEventSubscriber;
 
 @ExtendWith(MockitoExtension.class)

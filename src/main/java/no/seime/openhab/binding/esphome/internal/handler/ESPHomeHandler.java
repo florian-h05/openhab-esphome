@@ -56,6 +56,7 @@ import no.seime.openhab.binding.esphome.events.ESPHomeEventFactory;
 import no.seime.openhab.binding.esphome.internal.*;
 import no.seime.openhab.binding.esphome.internal.audio.ESPHomeAudioSink;
 import no.seime.openhab.binding.esphome.internal.audio.ESPHomeVoiceAssistantAudioSource;
+import no.seime.openhab.binding.esphome.internal.audio.VoiceAssistantFeature;
 import no.seime.openhab.binding.esphome.internal.bluetooth.ESPHomeBluetoothProxyHandler;
 import no.seime.openhab.binding.esphome.internal.comm.*;
 import no.seime.openhab.binding.esphome.internal.discovery.ESPHomeMDNSHostnameResolver;
@@ -80,36 +81,6 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
     private static final String DEVICE_LOGGER_NAME = "ESPHOMEDEVICE";
     private static final String ACTION_TAG_SCANNED = "esphome.tag_scanned";
     static final String PROPERTY_LAST_KNOWN_IP_ADDRESS = "lastKnownIpAddress";
-
-    /**
-     * Voice assistant feature flags advertised by ESPHome in {@code DeviceInfoResponse.voice_assistant_feature_flags}.
-     * The currently available flags come from ESPHome's
-     * {@code esphome/components/voice_assistant/voice_assistant.h}.
-     */
-    public enum VoiceAssistantFeature {
-        /** The device exposes the voice assistant component itself. */
-        VOICE_ASSISTANT(1 << 0),
-        /** The device has a local speaker attached to the voice assistant. */
-        SPEAKER(1 << 1),
-        /** The device supports microphone audio streaming over the native API. */
-        API_AUDIO(1 << 2),
-        /** The device exposes voice-assistant timer support. */
-        TIMERS(1 << 3),
-        /** The device supports voice assistant announcements via a media player. */
-        ANNOUNCE(1 << 4),
-        /** The device supports starting a follow-up conversation from a media player. */
-        START_CONVERSATION(1 << 5);
-
-        private final int flag;
-
-        VoiceAssistantFeature(int flag) {
-            this.flag = flag;
-        }
-
-        public int getFlag() {
-            return flag;
-        }
-    }
 
     private final Logger logger = LoggerFactory.getLogger(ESPHomeHandler.class);
     private final Logger deviceLogger = LoggerFactory.getLogger(DEVICE_LOGGER_NAME);
@@ -481,6 +452,8 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
                     null, frequency, channels);
             case "OGG" -> new AudioFormat(AudioFormat.CONTAINER_OGG, AudioFormat.CODEC_VORBIS, null, bitDepth, null,
                     frequency, channels);
+            // Note: org.openhab.core.audio.AudioFormat added FLAC consts in 5.3, which is higher than our compile
+            // target
             case "FLAC" -> new AudioFormat("FLAC", "FLAC", null, bitDepth, null, frequency, channels);
             default -> null;
         };
