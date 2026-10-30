@@ -14,6 +14,8 @@ package no.seime.openhab.binding.esphome.internal.audio;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
@@ -34,8 +36,10 @@ import org.slf4j.LoggerFactory;
 
 import io.esphome.api.ListEntitiesMediaPlayerResponse;
 import io.esphome.api.MediaPlayerCommandRequest;
+import io.esphome.api.MediaPlayerFormatPurpose;
 import io.esphome.api.MediaPlayerState;
 import io.esphome.api.MediaPlayerStateResponse;
+import io.esphome.api.MediaPlayerSupportedFormat;
 import no.seime.openhab.binding.esphome.internal.comm.ProtocolAPIError;
 import no.seime.openhab.binding.esphome.internal.handler.ESPHomeHandler;
 
@@ -62,9 +66,13 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
     private final int mediaPlayerKey;
     private final String mediaPlayerObjectId;
     private final Set<AudioFormat> supportedFormats;
+    private final Set<AudioFormat> announcementFormats;
+    private final Set<AudioFormat> defaultFormats;
 
     private final Object playbackLock = new Object();
     private @Nullable AudioStream pendingStream;
+    private boolean isPendingStreamAnnouncement;
+    private @Nullable Boolean lastPlaybackWasAnnouncement;
     private boolean announcementStarted;
     private boolean playbackStarted;
     private @Nullable ScheduledFuture<?> pendingStreamTimeout;
@@ -72,13 +80,29 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
     private volatile @Nullable MediaPlayerStateResponse state;
 
     public ESPHomeAudioSink(ESPHomeHandler handler, AudioHTTPServer audioHTTPServer,
-            ListEntitiesMediaPlayerResponse mediaPlayer, Set<AudioFormat> supportedFormats, String baseUrl) {
+            ListEntitiesMediaPlayerResponse mediaPlayer, String baseUrl) {
         this.handler = handler;
         this.audioHTTPServer = audioHTTPServer;
         this.baseUrl = normalizeBaseUrl(baseUrl);
         this.mediaPlayerKey = mediaPlayer.getKey();
         this.mediaPlayerObjectId = mediaPlayer.getObjectId();
-        this.supportedFormats = supportedFormats;
+        this.supportedFormats = AudioUtil.mapSupportedAudioFormats(mediaPlayer.getSupportedFormatsList());
+
+        Set<AudioFormat> announcementFormats = new HashSet<>();
+        Set<AudioFormat> defaultFormats = new HashSet<>();
+        for (MediaPlayerSupportedFormat format : mediaPlayer.getSupportedFormatsList()) {
+            AudioFormat mappedFormat = AudioUtil.mapSupportedAudioFormat(format);
+            if (mappedFormat != null) {
+                if (format.getPurpose() == MediaPlayerFormatPurpose.MEDIA_PLAYER_FORMAT_PURPOSE_ANNOUNCEMENT) {
+                    announcementFormats.add(mappedFormat);
+                } else {
+                    defaultFormats.add(mappedFormat);
+                }
+            }
+        }
+        this.announcementFormats = Collections.unmodifiableSet(announcementFormats);
+        this.defaultFormats = Collections.unmodifiableSet(defaultFormats);
+
         String id = handler.getThing().getUID() + ":sink";
         if (!mediaPlayerObjectId.isBlank()) {
             id += ":" + mediaPlayerObjectId;
@@ -100,16 +124,20 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
                 return;
             }
             MediaPlayerState playerState = state.getState();
-            if (playerState == MediaPlayerState.MEDIA_PLAYER_STATE_ANNOUNCING) {
-                announcementStarted = true;
-            } else if (playerState == MediaPlayerState.MEDIA_PLAYER_STATE_PLAYING) {
-                playbackStarted = true;
-            } else if (announcementStarted) {
-                completePendingStream();
-            } else if (playbackStarted && (playerState == MediaPlayerState.MEDIA_PLAYER_STATE_IDLE
-                    || playerState == MediaPlayerState.MEDIA_PLAYER_STATE_OFF
-                    || playerState == MediaPlayerState.MEDIA_PLAYER_STATE_PAUSED)) {
-                completePendingStream();
+            if (isPendingStreamAnnouncement) {
+                if (playerState == MediaPlayerState.MEDIA_PLAYER_STATE_ANNOUNCING) {
+                    announcementStarted = true;
+                } else if (announcementStarted) {
+                    completePendingStream();
+                }
+            } else {
+                if (playerState == MediaPlayerState.MEDIA_PLAYER_STATE_PLAYING) {
+                    playbackStarted = true;
+                } else if (playbackStarted && (playerState == MediaPlayerState.MEDIA_PLAYER_STATE_IDLE
+                        || playerState == MediaPlayerState.MEDIA_PLAYER_STATE_OFF
+                        || playerState == MediaPlayerState.MEDIA_PLAYER_STATE_PAUSED)) {
+                    completePendingStream();
+                }
             }
         }
     }
@@ -155,12 +183,20 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
     @Override
     protected void processAsynchronously(@Nullable AudioStream audioStream) throws UnsupportedAudioFormatException {
         if (audioStream == null) {
+            boolean stopAnnouncement;
             synchronized (playbackLock) {
+                if (pendingStream != null) {
+                    stopAnnouncement = isPendingStreamAnnouncement;
+                } else if (lastPlaybackWasAnnouncement != null) {
+                    stopAnnouncement = lastPlaybackWasAnnouncement;
+                } else {
+                    stopAnnouncement = !announcementFormats.isEmpty();
+                }
                 completePendingStream();
             }
             try {
                 handler.sendMessage(MediaPlayerCommandRequest.newBuilder().setKey(mediaPlayerKey).setHasCommand(true)
-                        .setHasAnnouncement(true).setAnnouncement(true)
+                        .setHasAnnouncement(true).setAnnouncement(stopAnnouncement)
                         .setCommand(io.esphome.api.MediaPlayerCommand.MEDIA_PLAYER_COMMAND_STOP).build());
             } catch (ProtocolAPIError e) {
                 throw new IllegalStateException("Failed to stop ESPHome media player playback", e);
@@ -174,19 +210,22 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
         }
 
         try {
+            boolean announcement = isAnnouncement(audioStream.getFormat());
             if (audioStream instanceof URLAudioStream urlAudioStream) {
                 // For URLAudioStream, track playback completion by listening to playback state updates from the ESPHome
                 // device in updateState()
                 synchronized (playbackLock) {
                     completePendingStream();
                     pendingStream = audioStream;
+                    isPendingStreamAnnouncement = announcement;
+                    lastPlaybackWasAnnouncement = announcement;
                     announcementStarted = false;
                     playbackStarted = false;
                     pendingStreamTimeout = handler.schedule(() -> {
                         synchronized (playbackLock) {
                             if (pendingStream == audioStream) {
                                 logger.debug(
-                                        "[{}] Timeout waiting for ESPHome media player {} announcement to complete",
+                                        "[{}] Timeout waiting for ESPHome media player {} audio playback to complete",
                                         handler.getLogPrefix(), mediaPlayerObjectId);
                                 completePendingStream();
                             }
@@ -194,14 +233,18 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
                     }, STREAM_URL_TTL_SECONDS, TimeUnit.SECONDS);
                 }
                 handler.sendMessage(MediaPlayerCommandRequest.newBuilder().setKey(mediaPlayerKey).setHasMediaUrl(true)
-                        .setMediaUrl(urlAudioStream.getURL()).setHasAnnouncement(true).setAnnouncement(true).build());
+                        .setMediaUrl(urlAudioStream.getURL()).setHasAnnouncement(true).setAnnouncement(announcement)
+                        .build());
             } else {
+                synchronized (playbackLock) {
+                    lastPlaybackWasAnnouncement = announcement;
+                }
                 StreamServed servedStream = audioHTTPServer.serve(audioStream, STREAM_URL_TTL_SECONDS, false);
                 String absoluteUrl = URI.create(baseUrl + servedStream.url()).toString();
 
                 MediaPlayerCommandRequest request = MediaPlayerCommandRequest.newBuilder().setKey(mediaPlayerKey)
-                        .setHasMediaUrl(true).setMediaUrl(absoluteUrl).setHasAnnouncement(true).setAnnouncement(true)
-                        .build();
+                        .setHasMediaUrl(true).setMediaUrl(absoluteUrl).setHasAnnouncement(true)
+                        .setAnnouncement(announcement).build();
                 handler.sendMessage(request);
                 servedStream.playEnd().whenComplete((ignored, error) -> {
                     if (error != null) {
@@ -252,9 +295,17 @@ public class ESPHomeAudioSink extends AudioSinkAsync {
         }
     }
 
-    private boolean supports(AudioFormat actualFormat) {
-        return supportedFormats.stream()
+    private boolean matches(Set<AudioFormat> formats, AudioFormat actualFormat) {
+        return formats.stream()
                 .anyMatch(format -> format.isCompatible(actualFormat) || actualFormat.isCompatible(format));
+    }
+
+    private boolean supports(AudioFormat actualFormat) {
+        return matches(supportedFormats, actualFormat);
+    }
+
+    private boolean isAnnouncement(AudioFormat actualFormat) {
+        return !announcementFormats.isEmpty() && matches(announcementFormats, actualFormat);
     }
 
     private static String normalizeBaseUrl(String baseUrl) {

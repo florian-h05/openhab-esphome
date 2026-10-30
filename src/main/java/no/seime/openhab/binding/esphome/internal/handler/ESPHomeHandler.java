@@ -54,6 +54,7 @@ import com.jano7.executor.KeySequentialExecutor;
 import io.esphome.api.*;
 import no.seime.openhab.binding.esphome.events.ESPHomeEventFactory;
 import no.seime.openhab.binding.esphome.internal.*;
+import no.seime.openhab.binding.esphome.internal.audio.AudioUtil;
 import no.seime.openhab.binding.esphome.internal.audio.ESPHomeAudioSink;
 import no.seime.openhab.binding.esphome.internal.audio.ESPHomeVoiceAssistantAudioSource;
 import no.seime.openhab.binding.esphome.internal.audio.VoiceAssistantFeature;
@@ -330,15 +331,15 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
 
         Set<Integer> staleKeys = new HashSet<>(audioSinkRegistrations.keySet());
         for (ListEntitiesMediaPlayerResponse mediaPlayer : mediaPlayers.values()) {
-            Set<AudioFormat> supportedFormats = mapSupportedAudioFormats(mediaPlayer.getSupportedFormatsList());
+            Set<AudioFormat> supportedFormats = AudioUtil
+                    .mapSupportedAudioFormats(mediaPlayer.getSupportedFormatsList());
             if (supportedFormats.isEmpty()) {
                 continue;
             }
             staleKeys.remove(mediaPlayer.getKey());
             ESPHomeAudioSink sink = audioSinks.get(mediaPlayer.getKey());
             if (sink == null) {
-                ESPHomeAudioSink newAudioSink = new ESPHomeAudioSink(this, audioHTTPServer, mediaPlayer,
-                        supportedFormats, baseUrl);
+                ESPHomeAudioSink newAudioSink = new ESPHomeAudioSink(this, audioHTTPServer, mediaPlayer, baseUrl);
                 newAudioSink.updateState(mediaPlayerStates.get(mediaPlayer.getKey()));
                 audioSinkRegistrations.put(mediaPlayer.getKey(),
                         bundleContext.registerService(AudioSink.class, newAudioSink, new Hashtable<>()));
@@ -430,36 +431,6 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
         if (sink != null) {
             sink.updateState(message);
         }
-    }
-
-    private Set<AudioFormat> mapSupportedAudioFormats(List<MediaPlayerSupportedFormat> supportedFormats) {
-        Set<AudioFormat> formats = new HashSet<>();
-        for (MediaPlayerSupportedFormat format : supportedFormats) {
-            AudioFormat mappedFormat = mapSupportedAudioFormat(format);
-            if (mappedFormat != null) {
-                formats.add(mappedFormat);
-            }
-        }
-        return formats;
-    }
-
-    private @Nullable AudioFormat mapSupportedAudioFormat(MediaPlayerSupportedFormat format) {
-        Integer bitDepth = format.getSampleBytes() > 0 ? format.getSampleBytes() * 8 : null;
-        Long frequency = format.getSampleRate() > 0 ? (long) format.getSampleRate() : null;
-        Integer channels = format.getNumChannels() > 0 ? format.getNumChannels() : null;
-
-        return switch (format.getFormat().toUpperCase(Locale.ROOT)) {
-            case "MP3" -> new AudioFormat(AudioFormat.CONTAINER_NONE, AudioFormat.CODEC_MP3, null, bitDepth, null,
-                    frequency, channels);
-            case "WAV" -> new AudioFormat(AudioFormat.CONTAINER_WAVE, AudioFormat.CODEC_PCM_SIGNED, null, bitDepth,
-                    null, frequency, channels);
-            case "OGG" -> new AudioFormat(AudioFormat.CONTAINER_OGG, AudioFormat.CODEC_VORBIS, null, bitDepth, null,
-                    frequency, channels);
-            // Note: org.openhab.core.audio.AudioFormat added FLAC consts in 5.3, which is higher than our compile
-            // target
-            case "FLAC" -> new AudioFormat("FLAC", "FLAC", null, bitDepth, null, frequency, channels);
-            default -> null;
-        };
     }
 
     private void connect() {
