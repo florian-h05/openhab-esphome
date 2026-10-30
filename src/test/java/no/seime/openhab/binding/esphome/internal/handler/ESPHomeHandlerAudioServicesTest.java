@@ -1,6 +1,7 @@
 package no.seime.openhab.binding.esphome.internal.handler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.when;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Dictionary;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -21,14 +23,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.openhab.core.audio.AudioFormat;
 import org.openhab.core.audio.AudioHTTPServer;
 import org.openhab.core.audio.AudioSink;
 import org.openhab.core.audio.AudioSource;
+import org.openhab.core.audio.URLAudioStream;
 import org.openhab.core.events.EventPublisher;
 import org.openhab.core.library.CoreItemFactory;
 import org.openhab.core.library.types.OnOffType;
@@ -51,6 +56,7 @@ import io.esphome.api.ListEntitiesDoneResponse;
 import io.esphome.api.ListEntitiesMediaPlayerResponse;
 import io.esphome.api.MediaPlayerCommand;
 import io.esphome.api.MediaPlayerCommandRequest;
+import io.esphome.api.MediaPlayerFormatPurpose;
 import io.esphome.api.MediaPlayerState;
 import io.esphome.api.MediaPlayerStateResponse;
 import io.esphome.api.MediaPlayerSupportedFormat;
@@ -149,6 +155,116 @@ class ESPHomeHandlerAudioServicesTest {
 
         verify(bundleContext, times(2)).registerService(eq(AudioSink.class), any(AudioSink.class),
                 any(Dictionary.class));
+    }
+
+    @Test
+    void routesToAnnouncementOrDefaultChannelBasedOnFormat() throws Exception {
+        ArgumentCaptor<AudioSink> sinkCaptor = ArgumentCaptor.forClass(AudioSink.class);
+        when(bundleContext.registerService(eq(AudioSink.class), sinkCaptor.capture(), any(Dictionary.class)))
+                .thenReturn(audioSinkRegistration);
+
+        invokeHandleConnected(ListEntitiesMediaPlayerResponse.newBuilder().setKey(11).setObjectId("speaker_one")
+                .setName("Speaker One")
+                .addSupportedFormats(MediaPlayerSupportedFormat.newBuilder().setFormat("MP3")
+                        .setPurpose(MediaPlayerFormatPurpose.MEDIA_PLAYER_FORMAT_PURPOSE_DEFAULT).build())
+                .addSupportedFormats(MediaPlayerSupportedFormat.newBuilder().setFormat("WAV")
+                        .setPurpose(MediaPlayerFormatPurpose.MEDIA_PLAYER_FORMAT_PURPOSE_ANNOUNCEMENT).build())
+                .build());
+
+        invokeHandleConnected(ListEntitiesDoneResponse.getDefaultInstance());
+
+        AudioSink sink = sinkCaptor.getValue();
+        assertNotNull(sink);
+        assertTrue(
+                sink.getSupportedFormats().stream().anyMatch(f -> AudioFormat.CODEC_PCM_SIGNED.equals(f.getCodec())));
+        assertTrue(sink.getSupportedFormats().stream().anyMatch(f -> AudioFormat.CODEC_MP3.equals(f.getCodec())));
+
+        URLAudioStream wavStream = Mockito.mock(URLAudioStream.class);
+        when(wavStream.getURL()).thenReturn("http://example.com/sound.wav");
+        when(wavStream.getFormat()).thenReturn(AudioFormat.WAV);
+        sink.processAndComplete(wavStream);
+
+        verify(frameHelper).send(MediaPlayerCommandRequest.newBuilder().setKey(11).setHasMediaUrl(true)
+                .setMediaUrl("http://example.com/sound.wav").setHasAnnouncement(true).setAnnouncement(true).build());
+
+        URLAudioStream mp3Stream = Mockito.mock(URLAudioStream.class);
+        when(mp3Stream.getURL()).thenReturn("http://example.com/sound.mp3");
+        when(mp3Stream.getFormat()).thenReturn(AudioFormat.MP3);
+        sink.processAndComplete(mp3Stream);
+
+        verify(frameHelper).send(MediaPlayerCommandRequest.newBuilder().setKey(11).setHasMediaUrl(true)
+                .setMediaUrl("http://example.com/sound.mp3").setHasAnnouncement(true).setAnnouncement(false).build());
+    }
+
+    @Test
+    void supportsGenericURLAudioStreamAndTracksPlaybackLifecycle() throws Exception {
+        ArgumentCaptor<AudioSink> sinkCaptor = ArgumentCaptor.forClass(AudioSink.class);
+        when(bundleContext.registerService(eq(AudioSink.class), sinkCaptor.capture(), any(Dictionary.class)))
+                .thenReturn(audioSinkRegistration);
+
+        invokeHandleConnected(ListEntitiesMediaPlayerResponse.newBuilder().setKey(11).setObjectId("speaker_one")
+                .setName("Speaker One")
+                .addSupportedFormats(MediaPlayerSupportedFormat.newBuilder().setFormat("MP3").setSampleRate(44100)
+                        .setPurpose(MediaPlayerFormatPurpose.MEDIA_PLAYER_FORMAT_PURPOSE_ANNOUNCEMENT).build())
+                .build());
+
+        invokeHandleConnected(ListEntitiesDoneResponse.getDefaultInstance());
+
+        AudioSink sink = sinkCaptor.getValue();
+        assertNotNull(sink);
+
+        URLAudioStream urlStream = Mockito.mock(URLAudioStream.class);
+        when(urlStream.getURL()).thenReturn("http://example.com/sound.mp3");
+        when(urlStream.getFormat()).thenReturn(AudioFormat.MP3);
+        CompletableFuture<Void> playFuture = sink.processAndComplete(urlStream);
+
+        verify(frameHelper).send(MediaPlayerCommandRequest.newBuilder().setKey(11).setHasMediaUrl(true)
+                .setMediaUrl("http://example.com/sound.mp3").setHasAnnouncement(true).setAnnouncement(true).build());
+
+        // Playback should not finish immediately
+        assertFalse(playFuture.isDone());
+
+        // Device enters announcing state
+        invokeHandleConnected(MediaPlayerStateResponse.newBuilder().setKey(11)
+                .setState(MediaPlayerState.MEDIA_PLAYER_STATE_ANNOUNCING).build());
+        assertFalse(playFuture.isDone());
+
+        // Device finishes announcing and returns to idle
+        invokeHandleConnected(MediaPlayerStateResponse.newBuilder().setKey(11)
+                .setState(MediaPlayerState.MEDIA_PLAYER_STATE_IDLE).build());
+        assertTrue(playFuture.isDone());
+    }
+
+    @Test
+    void stopCommandRoutesToAnnouncementPipelineAndCompletesPendingStream() throws Exception {
+        ArgumentCaptor<AudioSink> sinkCaptor = ArgumentCaptor.forClass(AudioSink.class);
+        when(bundleContext.registerService(eq(AudioSink.class), sinkCaptor.capture(), any(Dictionary.class)))
+                .thenReturn(audioSinkRegistration);
+
+        invokeHandleConnected(ListEntitiesMediaPlayerResponse.newBuilder().setKey(11).setObjectId("speaker_one")
+                .setName("Speaker One")
+                .addSupportedFormats(MediaPlayerSupportedFormat.newBuilder().setFormat("MP3")
+                        .setPurpose(MediaPlayerFormatPurpose.MEDIA_PLAYER_FORMAT_PURPOSE_ANNOUNCEMENT).build())
+                .build());
+
+        invokeHandleConnected(ListEntitiesDoneResponse.getDefaultInstance());
+
+        AudioSink sink = sinkCaptor.getValue();
+        assertNotNull(sink);
+
+        URLAudioStream urlStream = Mockito.mock(URLAudioStream.class);
+        when(urlStream.getURL()).thenReturn("http://example.com/sound.mp3");
+        when(urlStream.getFormat()).thenReturn(AudioFormat.MP3);
+        CompletableFuture<Void> playFuture = sink.processAndComplete(urlStream);
+        assertFalse(playFuture.isDone());
+
+        sink.processAndComplete(null);
+
+        verify(frameHelper)
+                .send(MediaPlayerCommandRequest.newBuilder().setKey(11).setHasCommand(true).setHasAnnouncement(true)
+                        .setAnnouncement(true).setCommand(MediaPlayerCommand.MEDIA_PLAYER_COMMAND_STOP).build());
+
+        assertTrue(playFuture.isDone());
     }
 
     @Test
@@ -278,6 +394,11 @@ class ESPHomeHandlerAudioServicesTest {
 
         verify(frameHelper).send(MediaPlayerCommandRequest.newBuilder().setKey(11).setHasCommand(true)
                 .setCommand(MediaPlayerCommand.MEDIA_PLAYER_COMMAND_MUTE).build());
+
+        handler.handleCommand(volumeChannelUID(), OnOffType.OFF);
+
+        verify(frameHelper).send(MediaPlayerCommandRequest.newBuilder().setKey(11).setHasCommand(true)
+                .setCommand(MediaPlayerCommand.MEDIA_PLAYER_COMMAND_UNMUTE).build());
     }
 
     @Test
