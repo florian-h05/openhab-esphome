@@ -48,6 +48,8 @@ import no.seime.openhab.binding.esphome.internal.handler.ESPHomeHandler;
  * the native API.
  *
  * @author Cody Cutrer - Initial contribution
+ * @author Florian Hotze - Track URL stream playback completion; Route audio to announcement or default channel based on
+ *         AudioFormat
  */
 @NonNullByDefault
 public class ESPHomeAudioSink extends AudioSinkAsync {
