@@ -15,6 +15,11 @@ package no.seime.openhab.binding.esphome.internal.audio;
 import java.io.IOException;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -43,6 +48,8 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
 
     private static final AudioFormat AUDIO_FORMAT = new AudioFormat(AudioFormat.CONTAINER_NONE,
             AudioFormat.CODEC_PCM_SIGNED, false, 16, null, 16000L, 1);
+    private static final byte[] END_OF_STREAM_MARKER = new byte[0];
+    private static final int AUDIO_QUEUE_CAPACITY = 128;
 
     private final Logger logger = LoggerFactory.getLogger(ESPHomeVoiceAssistantAudioSource.class);
 
@@ -51,10 +58,13 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
     private final String label;
 
     private final Object lock = new Object();
+    private final BlockingQueue<byte[]> audioQueue = new ArrayBlockingQueue<>(AUDIO_QUEUE_CAPACITY);
+    private final ExecutorService audioStreamExecutor;
+    private @Nullable Future<?> workerFuture;
 
-    private PipedAudioStream.Group streamGroup = PipedAudioStream.newGroup(AUDIO_FORMAT, 16 * 1024);
+    private volatile PipedAudioStream.Group streamGroup = PipedAudioStream.newGroup(AUDIO_FORMAT, 16 * 1024);
     private boolean subscribed;
-    private boolean streaming;
+    private volatile boolean streaming;
 
     public ESPHomeVoiceAssistantAudioSource(ESPHomeHandler handler) {
         this.handler = handler;
@@ -62,6 +72,11 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
         String thingLabel = handler.getThing().getLabel() != null ? handler.getThing().getLabel()
                 : handler.getThing().getUID().getId();
         this.label = "ESPHome " + thingLabel + " microphone";
+        this.audioStreamExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "ESPHome-VA-AudioSource-" + id);
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     @Override
@@ -117,6 +132,9 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
             try {
                 handler.sendMessage(VoiceAssistantResponse.newBuilder().setPort(0).setError(false).build());
                 streaming = true;
+                audioQueue.clear();
+                PipedAudioStream.Group activeGroup = streamGroup;
+                workerFuture = audioStreamExecutor.submit(() -> processAudioQueue(activeGroup));
             } catch (ProtocolAPIError e) {
                 logger.debug("[{}] Failed to accept voice assistant request", handler.getLogPrefix(), e);
                 endSession();
@@ -125,24 +143,48 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
     }
 
     public void handleVoiceAssistantAudio(VoiceAssistantAudio audio) {
-        synchronized (lock) {
-            if (!streaming || streamGroup.isEmpty()) {
-                return;
-            }
+        // Do NOT lock in "hot" ingestion path, instead rely on thread-safe visibility of volatile streaming flag
 
-            if (!audio.getData().isEmpty()) {
+        if (!streaming) {
+            return;
+        }
+
+        if (!audio.getData().isEmpty()) {
+            byte[] data = audio.getData().toByteArray();
+            while (!audioQueue.offer(data)) {
+                audioQueue.poll(); // Evict oldest frame to prevent unbounded memory growth & keep latency low
+            }
+        }
+
+        if (audio.getEnd()) {
+            while (!audioQueue.offer(END_OF_STREAM_MARKER)) {
+                audioQueue.poll(); // Evict oldest frame to prevent END_OF_STREAM_MARKER being dropped silently
+            }
+        }
+    }
+
+    private void processAudioQueue(PipedAudioStream.Group targetGroup) {
+        try {
+            while (streaming && !Thread.currentThread().isInterrupted()) {
+                byte[] chunk = audioQueue.take();
+                if (chunk == END_OF_STREAM_MARKER || chunk.length == 0) {
+                    break;
+                }
                 try {
-                    streamGroup.write(audio.getData().toByteArray());
-                    streamGroup.flush();
+                    targetGroup.write(chunk);
+                    targetGroup.flush();
                 } catch (RuntimeException e) {
                     logger.debug("[{}] Error forwarding ESPHome voice assistant audio", handler.getLogPrefix(), e);
-                    endSession();
-                    return;
+                    break;
                 }
             }
-
-            if (audio.getEnd()) {
-                endSession();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            synchronized (lock) {
+                if (this.streamGroup == targetGroup) {
+                    endSession();
+                }
             }
         }
     }
@@ -151,6 +193,7 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
         synchronized (lock) {
             endSession();
             unsubscribe();
+            audioStreamExecutor.shutdownNow();
         }
     }
 
@@ -165,6 +208,7 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
     private void onStreamClosed() {
         synchronized (lock) {
             if (streamGroup.isEmpty()) {
+                endSession();
                 unsubscribe();
             }
         }
@@ -184,6 +228,12 @@ public class ESPHomeVoiceAssistantAudioSource implements AudioSource {
 
     private void endSession() {
         streaming = false;
+        Future<?> future = workerFuture;
+        if (future != null) {
+            future.cancel(true);
+            workerFuture = null;
+        }
+        audioQueue.clear();
         streamGroup.close();
         streamGroup = PipedAudioStream.newGroup(AUDIO_FORMAT, 16 * 1024);
     }

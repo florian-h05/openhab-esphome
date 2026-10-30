@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Dictionary;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -33,6 +34,7 @@ import org.openhab.core.audio.AudioFormat;
 import org.openhab.core.audio.AudioHTTPServer;
 import org.openhab.core.audio.AudioSink;
 import org.openhab.core.audio.AudioSource;
+import org.openhab.core.audio.AudioStream;
 import org.openhab.core.audio.URLAudioStream;
 import org.openhab.core.events.EventPublisher;
 import org.openhab.core.library.CoreItemFactory;
@@ -49,6 +51,7 @@ import org.openhab.core.thing.internal.ThingImpl;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.ServiceRegistration;
 
+import com.google.protobuf.ByteString;
 import com.jano7.executor.KeySequentialExecutor;
 
 import io.esphome.api.DeviceInfoResponse;
@@ -60,6 +63,8 @@ import io.esphome.api.MediaPlayerFormatPurpose;
 import io.esphome.api.MediaPlayerState;
 import io.esphome.api.MediaPlayerStateResponse;
 import io.esphome.api.MediaPlayerSupportedFormat;
+import io.esphome.api.VoiceAssistantAudio;
+import io.esphome.api.VoiceAssistantRequest;
 import no.seime.openhab.binding.esphome.internal.BindingConstants;
 import no.seime.openhab.binding.esphome.internal.ESPHomeConfiguration;
 import no.seime.openhab.binding.esphome.internal.ESPHomeVersionService;
@@ -302,6 +307,70 @@ class ESPHomeHandlerAudioServicesTest {
 
         verify(audioSinkRegistration).unregister();
         verify(audioSourceRegistration).unregister();
+    }
+
+    @Test
+    void unregistersAudioServicesOnDisposeWithoutNpeWhenDisconnected() throws Exception {
+        when(bundleContext.registerService(eq(AudioSink.class), any(AudioSink.class), any(Dictionary.class)))
+                .thenReturn(audioSinkRegistration);
+        when(bundleContext.registerService(eq(AudioSource.class), any(AudioSource.class), any(Dictionary.class)))
+                .thenReturn(audioSourceRegistration);
+
+        invokeHandleConnected(DeviceInfoResponse.newBuilder().setName("virtual").setMacAddress("AA").setModel("ESP32")
+                .setManufacturer("Espressif").setEsphomeVersion("2026.1.0").setCompilationTime("now")
+                .setVoiceAssistantFeatureFlags(VoiceAssistantFeature.API_AUDIO.getFlag()).build());
+        invokeHandleConnected(ListEntitiesMediaPlayerResponse.newBuilder().setKey(11).setObjectId("speaker_one")
+                .setName("Speaker One")
+                .addSupportedFormats(MediaPlayerSupportedFormat.newBuilder().setFormat("MP3").build()).build());
+        invokeHandleConnected(ListEntitiesDoneResponse.getDefaultInstance());
+
+        // Set frameHelper to null simulating closed transport prior to dispose
+        setField("frameHelper", null);
+
+        handler.dispose();
+
+        verify(audioSinkRegistration).unregister();
+        verify(audioSourceRegistration).unregister();
+    }
+
+    @Test
+    void voiceAssistantAudioSourceStreamsAndClosesWithoutDeadlock() throws Exception {
+        ArgumentCaptor<AudioSource> sourceCaptor = ArgumentCaptor.forClass(AudioSource.class);
+        when(bundleContext.registerService(eq(AudioSource.class), sourceCaptor.capture(), any(Dictionary.class)))
+                .thenReturn(audioSourceRegistration);
+
+        invokeHandleConnected(DeviceInfoResponse.newBuilder().setName("virtual").setMacAddress("AA").setModel("ESP32")
+                .setManufacturer("Espressif").setEsphomeVersion("2026.1.0").setCompilationTime("now")
+                .setVoiceAssistantFeatureFlags(VoiceAssistantFeature.API_AUDIO.getFlag()).build());
+        invokeHandleConnected(ListEntitiesDoneResponse.getDefaultInstance());
+
+        AudioSource source = sourceCaptor.getValue();
+        assertNotNull(source);
+
+        AudioStream stream = source.getInputStream(source.getSupportedFormats().iterator().next());
+        assertNotNull(stream);
+
+        // Start voice session from device
+        invokeHandleConnected(VoiceAssistantRequest.newBuilder().setStart(true).build());
+
+        // Send audio data from device
+        byte[] pcmData = new byte[320];
+        for (int i = 0; i < pcmData.length; i++) {
+            pcmData[i] = (byte) i;
+        }
+        invokeHandleConnected(VoiceAssistantAudio.newBuilder().setData(ByteString.copyFrom(pcmData)).build());
+
+        // Audio data is expected to be queued, read audio data from the queue
+        byte[] readBuffer = new byte[320];
+        int bytesRead = stream.read(readBuffer);
+        assertEquals(320, bytesRead);
+        assertEquals(Arrays.toString(readBuffer), Arrays.toString(pcmData));
+
+        // End voice session from device
+        invokeHandleConnected(VoiceAssistantAudio.newBuilder().setEnd(true).build());
+
+        // Closing stream should unblock and not deadlock => test should run without hanging the test runner
+        stream.close();
     }
 
     @Test
