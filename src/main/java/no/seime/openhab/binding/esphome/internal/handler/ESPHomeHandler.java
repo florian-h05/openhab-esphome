@@ -499,7 +499,12 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
     }
 
     public void sendMessage(GeneratedMessage message) throws ProtocolAPIError {
-        frameHelper.send(message);
+        EncryptedFrameHelper helper = frameHelper;
+        if (helper != null) {
+            helper.send(message);
+        } else {
+            throw new ProtocolAPIError(String.format("[%s] Device is not connected", logPrefix));
+        }
     }
 
     public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
