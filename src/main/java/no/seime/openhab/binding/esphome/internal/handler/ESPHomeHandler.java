@@ -393,6 +393,9 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
             registration.unregister();
         }
         audioSinkRegistrations.clear();
+        for (ESPHomeAudioSink sink : audioSinks.values()) {
+            sink.dispose();
+        }
         audioSinks.clear();
     }
 
@@ -526,6 +529,10 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
 
     public void sendMessage(GeneratedMessage message) throws ProtocolAPIError {
         frameHelper.send(message);
+    }
+
+    public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+        return executorService.schedule(command, delay, unit);
     }
 
     private void setUndefToAllChannels() {
