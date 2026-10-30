@@ -267,6 +267,15 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
             cancelPingWatchdog();
             cancelConnectionTimeoutWatchdog();
             cancelDeepSleepWatchdog();
+            // ThingActions
+            clearThingActions();
+            // AudioSinks
+            unregisterAudioSinks();
+            mediaPlayers.clear();
+            mediaPlayerStates.clear();
+            // AudioSource
+            unregisterAudioSource();
+
             if (frameHelper != null) {
                 if (connectionState == ConnectionState.CONNECTED) {
                     try {
@@ -280,13 +289,6 @@ public class ESPHomeHandler extends BaseThingHandler implements CommunicationLis
                 frameHelper.close();
                 frameHelper = null;
             }
-
-            // ThingActions
-            clearThingActions();
-            unregisterAudioSinks();
-            unregisterAudioSource();
-            mediaPlayers.clear();
-            mediaPlayerStates.clear();
 
             connectionState = ConnectionState.UNINITIALIZED;
 
